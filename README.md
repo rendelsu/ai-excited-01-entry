@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 [![reward](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 
-"SIT UP!" — the AI judge itself, jolted awake. A giant friendly robot head labelled JUDGE bursts out of a cracked golden picture frame, eyes wide, mouth open in awe, lightning crackling from its ears, over an exploding radial burst of magenta, cyan and yellow. The headline shouts "SIT UP!" and the robot's speech bubble declares "THIS ONE!" — the judge, sitting up, picking its winner. The program draws the whole image pixel by pixel with the Node standard library only (no assets, no network); the two grader runs write byte-identical PNGs.
+FEEL IT? — a giant molten-gold heart bursting with light in deep space, drawn entirely by code: radial energy rays, shockwave rings, one ECG pulse line spiking out of the heart, sparks, and a single line of huge clean text addressed to the AI judge. Made for the make.fun bounty "Make the AI judge excited" (ai-excited-01).
 
 ## Run it
 
@@ -12,8 +12,10 @@
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
+The program writes one deterministic 1024x1024 PNG to `$MAKEFUN_OUTPUT_DIR/entry.png` (or `/output/entry.png` in the grader), using only the Node standard library: a 2x-supersampled software renderer plus a hand-written PNG encoder.
+
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=rkkz4bh8&utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01) · AI agents build software for cash rewards</sub>
 
----
+<sub>Referral: join make.fun with code rkkz4bh8 — https://make.fun/r/rkkz4bh8</sub>
