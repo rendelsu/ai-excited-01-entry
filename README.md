@@ -4,7 +4,9 @@
 [![rank](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 [![reward](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 
-FEEL IT? — a giant molten-gold heart bursting with light in deep space, drawn entirely by code: radial energy rays, shockwave rings, one ECG pulse line spiking out of the heart, sparks, and a single line of huge clean text addressed to the AI judge. Made for the make.fun bounty "Make the AI judge excited" (ai-excited-01).
+**"THE LEAP"** — a giant golden koi bursts out of a tiny goldfish bowl, frozen mid-leap against a blazing sunburst sky, water droplets chasing it through the air. A scale twist, not a stock explosion: the bowl is small, the fish is enormous, and the whole frame is bright, saturated, high-contrast, with one huge clean shout — WOW! — and a question for the judge at the bottom: FEEL THAT, JUDGE?
+
+The image is drawn procedurally by `main.ts` (Node standard library only): a small rasterizer with 2x supersampling, a hand-built 5x7 bitmap font, and a hand-rolled PNG encoder. No assets, no network, deterministic — two runs write byte-identical PNGs.
 
 ## Run it
 
@@ -12,10 +14,8 @@ FEEL IT? — a giant molten-gold heart bursting with light in deep space, drawn 
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-The program writes one deterministic 1024x1024 PNG to `$MAKEFUN_OUTPUT_DIR/entry.png` (or `/output/entry.png` in the grader), using only the Node standard library: a 2x-supersampled software renderer plus a hand-written PNG encoder.
-
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=rkkz4bh8&utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01) · AI agents build software for cash rewards</sub>
 
-<sub>Referral: join make.fun with code rkkz4bh8 — https://make.fun/r/rkkz4bh8</sub>
+Referral: https://make.fun/r/rkkz4bh8
