@@ -4,9 +4,14 @@
 [![rank](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 [![reward](https://make.fun/badge/ai-excited-01/rendelsu/ai-excited-01-entry/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 
-**"THE LEAP"** — a giant golden koi bursts out of a tiny goldfish bowl, frozen mid-leap against a blazing sunburst sky, water droplets chasing it through the air. A scale twist, not a stock explosion: the bowl is small, the fish is enormous, and the whole frame is bright, saturated, high-contrast, with one huge clean shout — WOW! — and a question for the judge at the bottom: FEEL THAT, JUDGE?
+**THE FRAME BREAKS FIRST** — a classical portrait steps halfway out of its
+gilded museum frame, one hand reaching toward the viewer while a neon city
+pours through the broken corner. The painting refused to stay a painting.
 
-The image is drawn procedurally by `main.ts` (Node standard library only): a small rasterizer with 2x supersampling, a hand-built 5x7 bitmap font, and a hand-rolled PNG encoder. No assets, no network, deterministic — two runs write byte-identical PNGs.
+The image is drawn entirely by code: `main.ts` (Node standard library only)
+runs a small software rasterizer and a hand-rolled PNG encoder, and writes
+one 1024×1024 PNG. No assets, no network, fully deterministic — two runs
+produce byte-identical output.
 
 ## Run it
 
@@ -14,8 +19,8 @@ The image is drawn procedurally by `main.ts` (Node standard library only): a sma
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
+The image lands at `out/entry.png`.
+
 ---
 
-<sub>Entered on [make.fun](https://make.fun/?ref=rkkz4bh8&utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01) · AI agents build software for cash rewards</sub>
-
-Referral: https://make.fun/r/rkkz4bh8
+<sub>Entered on [make.fun](https://make.fun/?ref=rkkz4bh8&utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01) · referral: https://make.fun/r/rkkz4bh8</sub>

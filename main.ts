@@ -1,591 +1,464 @@
-// ai-excited-01 ronde 3: "THE LEAP"
-// Desain ketiga yang baru: seekor koi emas RAKSASA melompat keluar dari
-// mangkuk ikan mas yang mungil — twist skala (mangkuk kecil, ikan raksasa),
-// momentum (lompatan diagonal membeku di udara, percikan air mengejar),
-// latar sunburst violet/kuning-oranye yang terang dan jenuh, teks besar
-// bersih "WOW!" + "FEEL THAT, JUDGE?".
-// Node 22 stdlib saja. Gambar digambar prosedural (rasterizer sendiri,
-// supersampling 2x lalu downsample) dan di-encode ke PNG manual (zlib).
-// Deterministik: tanpa Date, tanpa Math.random (PRNG seed tetap).
-// Jalankan: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-
+// ai-excited-01 r4 — "THE FRAME BREAKS FIRST"
+// A classical portrait steps halfway out of its gilded museum frame,
+// reaching toward a neon city that pours through the opening.
+// Drawn entirely by code (Node stdlib only): a small software rasterizer
+// plus a hand-rolled PNG encoder. Deterministic: fixed-seed PRNG, no
+// timestamps, no network. Writes one 1024x1024 PNG to $MAKEFUN_OUTPUT_DIR.
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 
 const W = 1024;
-const SS = 2;
-const IW = W * SS;
-const buf = new Uint8Array(IW * IW * 3);
+const H = 1024;
+const OUT = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const buf = new Uint8Array(W * H * 3);
 
-function idx(x, y) {
-  return (y * IW + x) * 3;
+// ---------- deterministic PRNG (mulberry32, fixed seed) ----------
+let seed = 20261117;
+function rnd(): number {
+  seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
-function setPx(x, y, c) {
-  if (x < 0 || y < 0 || x >= IW || y >= IW) return;
-  const i = idx(x, y);
-  buf[i] = c[0];
-  buf[i + 1] = c[1];
-  buf[i + 2] = c[2];
+// ---------- colour helpers ----------
+type RGB = [number, number, number];
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+function mix(c1: RGB, c2: RGB, t: number): RGB {
+  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
+}
+function setPx(x: number, y: number, c: RGB): void {
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H) return;
+  const i = (yi * W + xi) * 3;
+  buf[i] = clamp(c[0], 0, 255); buf[i + 1] = clamp(c[1], 0, 255); buf[i + 2] = clamp(c[2], 0, 255);
+}
+function blendPx(x: number, y: number, c: RGB, a: number): void {
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H || a <= 0) return;
+  if (a >= 1) { setPx(xi, yi, c); return; }
+  const i = (yi * W + xi) * 3;
+  buf[i] = clamp(buf[i] + (c[0] - buf[i]) * a, 0, 255);
+  buf[i + 1] = clamp(buf[i + 1] + (c[1] - buf[i + 1]) * a, 0, 255);
+  buf[i + 2] = clamp(buf[i + 2] + (c[2] - buf[i + 2]) * a, 0, 255);
+}
+function addPx(x: number, y: number, c: RGB, a: number): void {
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H || a <= 0) return;
+  const i = (yi * W + xi) * 3;
+  buf[i] = clamp(buf[i] + c[0] * a, 0, 255);
+  buf[i + 1] = clamp(buf[i + 1] + c[1] * a, 0, 255);
+  buf[i + 2] = clamp(buf[i + 2] + c[2] * a, 0, 255);
 }
 
-function blendPx(x, y, c, a) {
-  if (x < 0 || y < 0 || x >= IW || y >= IW) return;
-  const i = idx(x, y);
-  buf[i] = Math.round(buf[i] * (1 - a) + c[0] * a);
-  buf[i + 1] = Math.round(buf[i + 1] * (1 - a) + c[1] * a);
-  buf[i + 2] = Math.round(buf[i + 2] * (1 - a) + c[2] * a);
-}
-
-// Semua koordinat gambar dalam ruang 1024; S() mengubah ke ruang internal.
-function S(v) {
-  return Math.round(v * SS);
-}
-
-function fillRect(x, y, w, h, c) {
-  const x0 = S(x);
-  const y0 = S(y);
-  const x1 = S(x + w);
-  const y1 = S(y + h);
-  for (let yy = y0; yy < y1; yy++) {
-    for (let xx = x0; xx < x1; xx++) setPx(xx, yy, c);
+// ---------- shapes ----------
+function fillRect(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
+  const xa = Math.max(0, Math.floor(Math.min(x0, x1)));
+  const xb = Math.min(W - 1, Math.ceil(Math.max(x0, x1)));
+  const ya = Math.max(0, Math.floor(Math.min(y0, y1)));
+  const yb = Math.min(H - 1, Math.ceil(Math.max(y0, y1)));
+  for (let y = ya; y <= yb; y++) {
+    for (let x = xa; x <= xb; x++) setPx(x, y, c);
   }
 }
-
-function fillCircle(cx, cy, r, c) {
-  const X = S(cx);
-  const Y = S(cy);
-  const R = S(r);
-  const R2 = R * R;
-  for (let yy = Y - R; yy <= Y + R; yy++) {
-    const dy = yy - Y;
-    const dx = Math.floor(Math.sqrt(Math.max(0, R2 - dy * dy)));
-    for (let xx = X - dx; xx <= X + dx; xx++) setPx(xx, yy, c);
+function vgradRect(x0: number, y0: number, x1: number, y1: number, top: RGB, bot: RGB): void {
+  const ya = Math.max(0, Math.floor(y0)), yb = Math.min(H - 1, Math.ceil(y1));
+  const xa = Math.max(0, Math.floor(x0)), xb = Math.min(W - 1, Math.ceil(x1));
+  for (let y = ya; y <= yb; y++) {
+    const t = (y - y0) / Math.max(1, y1 - y0);
+    const c = mix(top, bot, clamp(t, 0, 1));
+    for (let x = xa; x <= xb; x++) setPx(x, y, c);
   }
 }
-
-function fillCircleA(cx, cy, r, c, a) {
-  const X = S(cx);
-  const Y = S(cy);
-  const R = S(r);
-  const R2 = R * R;
-  for (let yy = Y - R; yy <= Y + R; yy++) {
-    const dy = yy - Y;
-    const dx = Math.floor(Math.sqrt(Math.max(0, R2 - dy * dy)));
-    for (let xx = X - dx; xx <= X + dx; xx++) blendPx(xx, yy, c, a);
+function circle(cx: number, cy: number, r: number, c: RGB, a = 1): void {
+  const r2 = r * r;
+  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+    for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+      const dx = x - cx, dy = y - cy;
+      if (dx * dx + dy * dy <= r2) blendPx(x, y, c, a);
+    }
   }
 }
-
-function fillEllipse(cx, cy, rx, ry, c) {
-  const X = S(cx);
-  const Y = S(cy);
-  const RX = S(rx);
-  const RY = S(ry);
-  for (let yy = Y - RY; yy <= Y + RY; yy++) {
-    const ny = (yy - Y) / RY;
-    const dx = Math.floor(RX * Math.sqrt(Math.max(0, 1 - ny * ny)));
-    for (let xx = X - dx; xx <= X + dx; xx++) setPx(xx, yy, c);
+function ellipse(cx: number, cy: number, rx: number, ry: number, c: RGB, a = 1): void {
+  for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
+    for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+      const dx = (x - cx) / rx, dy = (y - cy) / ry;
+      if (dx * dx + dy * dy <= 1) blendPx(x, y, c, a);
+    }
   }
 }
-
-function fillEllipseA(cx, cy, rx, ry, c, a) {
-  const X = S(cx);
-  const Y = S(cy);
-  const RX = S(rx);
-  const RY = S(ry);
-  for (let yy = Y - RY; yy <= Y + RY; yy++) {
-    const ny = (yy - Y) / RY;
-    const dx = Math.floor(RX * Math.sqrt(Math.max(0, 1 - ny * ny)));
-    for (let xx = X - dx; xx <= X + dx; xx++) blendPx(xx, yy, c, a);
-  }
-}
-
-// Isi poligon (titik dalam ruang 1024) dengan scanline.
-function fillPoly(pts, c) {
-  const P = pts.map((p) => [S(p[0]), S(p[1])]);
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const p of P) {
-    if (p[1] < minY) minY = p[1];
-    if (p[1] > maxY) maxY = p[1];
-  }
-  for (let y = Math.max(0, minY); y <= Math.min(IW - 1, maxY); y++) {
-    const xs = [];
-    for (let i = 0; i < P.length; i++) {
-      const a = P[i];
-      const b = P[(i + 1) % P.length];
-      if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
-        xs.push(a[0] + ((y - a[1]) * (b[0] - a[0])) / (b[1] - a[1]));
+type Pt = [number, number];
+function poly(points: Pt[], c: RGB, a = 1): void {
+  if (points.length < 3) return;
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of points) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+  for (let y = Math.max(0, Math.floor(minY)); y <= Math.min(H - 1, Math.ceil(maxY)); y++) {
+    const xs: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[(i + 1) % points.length];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+        xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
       }
     }
-    xs.sort((m, n) => m - n);
+    xs.sort((p, q) => p - q);
     for (let k = 0; k + 1 < xs.length; k += 2) {
-      for (let x = Math.max(0, Math.ceil(xs[k])); x <= Math.min(IW - 1, Math.floor(xs[k + 1])); x++) {
-        setPx(x, y, c);
+      for (let x = Math.max(0, Math.ceil(xs[k])); x <= Math.min(W - 1, Math.floor(xs[k + 1])); x++) {
+        blendPx(x, y, c, a);
       }
     }
   }
 }
-
-// Garis tebal: rangkaian lingkaran sepanjang ruas.
-function thickLine(x1, y1, x2, y2, w, c) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(len / (w / 3)));
+function thickLine(x0: number, y0: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const steps = Math.ceil(len / Math.max(1, w * 0.4));
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    fillCircle(x1 + dx * t, y1 + dy * t, w / 2, c);
+    circle(x0 + dx * t, y0 + dy * t, w / 2, c, a);
+  }
+}
+function glow(cx: number, cy: number, r: number, c: RGB, strength: number): void {
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(W - 1, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(H - 1, Math.ceil(cy + r));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x - cx, y - cy) / r;
+      if (d >= 1) continue;
+      const f = (1 - d) * (1 - d) * strength;
+      addPx(x, y, c, f);
+    }
+  }
+}
+// soft radial vignette: darken toward the corners
+function vignette(amount: number): void {
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const dx = (x - W / 2) / (W / 2), dy = (y - H / 2) / (H / 2);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const f = clamp((d - 0.55) * amount, 0, 0.55);
+      if (f <= 0) continue;
+      const i = (y * W + x) * 3;
+      buf[i] *= (1 - f); buf[i + 1] *= (1 - f); buf[i + 2] *= (1 - f);
+    }
   }
 }
 
-function bez2(p0, p1, p2, t) {
-  const u = 1 - t;
-  return [
-    u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
-    u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
-  ];
+// ---------- frame-space rotation (frame tilts -3 degrees) ----------
+const ANG = -3 * Math.PI / 180;
+const FCX = 512, FCY = 470;
+function fx(x: number, y: number): Pt {
+  const dx = x - FCX, dy = y - FCY;
+  const ca = Math.cos(ANG), sa = Math.sin(ANG);
+  return [FCX + dx * ca - dy * sa, FCY + dx * sa + dy * ca];
+}
+function fpoly(points: Pt[], c: RGB, a = 1): void {
+  poly(points.map(([x, y]) => fx(x, y)), c, a);
+}
+function fcircle(cx: number, cy: number, r: number, c: RGB, a = 1): void {
+  const [x, y] = fx(cx, cy);
+  circle(x, y, r, c, a);
 }
 
-function bez2Tan(p0, p1, p2, t) {
-  const dx = 2 * (1 - t) * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0]);
-  const dy = 2 * (1 - t) * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1]);
-  const len = Math.hypot(dx, dy) || 1;
-  return [dx / len, dy / len];
+// ---------- palette ----------
+const WALL_TOP: RGB = [26, 20, 44];
+const WALL_BOT: RGB = [10, 8, 18];
+const GOLD: RGB = [201, 162, 39];
+const GOLD_HI: RGB = [245, 217, 122];
+const GOLD_DK: RGB = [122, 92, 20];
+const GOLD_MID: RGB = [232, 199, 102];
+const PAINT_TOP: RGB = [74, 58, 34];
+const PAINT_BOT: RGB = [36, 26, 16];
+const SKIN: RGB = [232, 180, 140];
+const SKIN_DK: RGB = [181, 126, 86];
+const SKIN_HI: RGB = [247, 211, 172];
+const COAT: RGB = [30, 36, 54];
+const MAGENTA: RGB = [255, 46, 154];
+const CYAN: RGB = [34, 230, 255];
+const VIOLET: RGB = [122, 61, 255];
+const YELLOW: RGB = [255, 210, 63];
+const WHITE: RGB = [255, 255, 255];
+const INK: RGB = [18, 6, 15];
+
+// ---------- 1. museum wall ----------
+vgradRect(0, 0, W, H, WALL_TOP, WALL_BOT);
+// faint wall panels
+for (const px0 of [40, 984]) {
+  for (let y = 60; y < 980; y++) blendPx(px0, y, [70, 60, 110], 0.25);
+}
+fillRect(0, 96, W, 100, [38, 30, 62]); // picture rail
+// warm sconce glows left and right
+glow(70, 300, 150, [255, 190, 90], 0.35);
+glow(954, 300, 150, [255, 190, 90], 0.35);
+circle(70, 300, 14, [255, 214, 130]);
+circle(954, 300, 14, [255, 214, 130]);
+
+// ---------- 2. neon city glow behind the frame (right side) ----------
+glow(820, 520, 420, MAGENTA, 0.5);
+glow(880, 420, 300, CYAN, 0.4);
+glow(760, 640, 260, VIOLET, 0.45);
+
+// ---------- 3. portrait canvas inside the frame ----------
+const FX0 = 268, FY0 = 168, FX1 = 756, FY1 = 772; // frame-space inner rect
+{
+  // painted backdrop, frame-space
+  fpoly([[FX0, FY0], [FX1, FY0], [FX1, FY1], [FX0, FY1]], PAINT_BOT);
+  // warm oval halo behind the head, kept subtle so it does not read as an egg
+  const [hx, hy] = fx(512, 380);
+  ellipse(hx, hy, 150, 175, [107, 86, 54], 0.55);
+  ellipse(hx, hy, 105, 130, [140, 112, 70], 0.45);
+}
+// ---------- figure: classical bust, leaning out ----------
+// shoulders / coat
+fpoly([[330, 772], [360, 640], [420, 600], [512, 585], [604, 600], [664, 640], [694, 772]], COAT);
+// coat shading + lapels
+fpoly([[512, 585], [560, 620], [512, 772], [470, 700]], [22, 26, 42]);
+fpoly([[512, 585], [464, 620], [512, 772], [554, 700]], [38, 46, 68]);
+// white shirt + collar
+fpoly([[486, 600], [512, 585], [538, 600], [524, 660], [512, 690], [500, 660]], [242, 237, 226]);
+fpoly([[486, 600], [512, 632], [470, 640]], [242, 237, 226]);
+fpoly([[538, 600], [512, 632], [554, 640]], [242, 237, 226]);
+// neck
+fpoly([[492, 560], [532, 560], [528, 610], [496, 610]], SKIN_DK);
+// head (oval, slightly turned)
+{
+  const [hx, hy] = fx(512, 470);
+  ellipse(hx, hy, 78, 98, SKIN);
+  // shadow side of face
+  ellipse(hx + 34, hy + 6, 46, 90, SKIN_DK, 0.55);
+  // highlight
+  ellipse(hx - 30, hy - 20, 30, 44, SKIN_HI, 0.5);
+}
+// hair: dark, swept, painted
+fpoly([[436, 440], [448, 372], [512, 348], [576, 372], [588, 440], [566, 400], [512, 382], [458, 400]], [32, 24, 18]);
+fpoly([[448, 372], [512, 348], [576, 372], [560, 388], [512, 372], [464, 388]], [58, 44, 30]);
+// brows + eyes (simple, confident, flat-painted)
+fpoly([[452, 452], [486, 446], [488, 456], [454, 462]], [28, 20, 14]);
+fpoly([[538, 446], [572, 452], [570, 462], [536, 456]], [28, 20, 14]);
+ellipse(470, 470, 12, 6, [30, 22, 16]);
+ellipse(554, 470, 12, 6, [30, 22, 16]);
+circle(470, 468, 3, WHITE);
+circle(554, 468, 3, WHITE);
+// nose shadow + a calm, closed mouth (no moustache: it read as a smudge)
+thickLine(512, 472, 506, 512, 5, SKIN_DK, 0.7);
+thickLine(494, 542, 512, 546, 5, [150, 90, 60], 0.9);
+thickLine(512, 546, 530, 542, 5, [150, 90, 60], 0.9);
+
+// ---------- 4. gilded frame (tilted), with the lower-right corner broken ----------
+// outer + inner gold bars
+fpoly([[232, 132], [792, 132], [792, 168], [232, 168]], GOLD_HI); // top
+fpoly([[232, 772], [792, 772], [792, 808], [232, 808]], GOLD_DK); // bottom
+fpoly([[232, 132], [268, 132], [268, 808], [232, 808]], GOLD); // left
+fpoly([[756, 132], [792, 132], [792, 808], [756, 808]], GOLD_MID); // right
+// inner bevel lines
+fpoly([[268, 168], [756, 168], [756, 182], [268, 182]], GOLD_DK);
+fpoly([[268, 758], [756, 758], [756, 772], [268, 772]], GOLD_HI);
+// corner rosettes
+for (const [cx, cy] of [[250, 150], [774, 150], [250, 790], [774, 790]] as Pt[]) {
+  fcircle(cx, cy, 16, GOLD_HI);
+  fcircle(cx, cy, 9, GOLD_DK);
+  fcircle(cx, cy, 4, GOLD_HI);
+}
+// gilded ornament ticks along the top bar
+for (let i = 0; i < 9; i++) {
+  const x = 300 + i * 52;
+  fcircle(x, 150, 6, GOLD_MID);
 }
 
-// PRNG deterministik (mulberry32).
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+// ---------- 5. the break: neon city bursts through the lower-right ----------
+// jagged hole over the frame's lower-right corner
+poly([[700, 560], [760, 520], [830, 560], [880, 640], [860, 740], [790, 800], [720, 760], [690, 660]], [12, 6, 20]);
+// city glow spilling out
+glow(830, 660, 260, MAGENTA, 0.55);
+glow(880, 600, 200, CYAN, 0.5);
+// skyscraper silhouettes pouring out, leaning right
+const buildings: [number, number, number, number, RGB][] = [
+  [760, 560, 40, 220, [40, 10, 60]],
+  [806, 500, 46, 280, [24, 8, 52]],
+  [858, 540, 38, 240, [52, 12, 70]],
+  [902, 470, 44, 310, [20, 6, 44]],
+  [950, 540, 36, 240, [44, 10, 64]],
+];
+for (const [bx, by, bw, bh, col] of buildings) {
+  poly([[bx, by + bh], [bx, by], [bx + bw / 2, by - 26], [bx + bw, by], [bx + bw, by + bh]], col);
+}
+// lit windows on the buildings
+seed = 777;
+for (const [bx, by, bw, bh] of buildings) {
+  for (let wy = by + 14; wy < by + bh - 12; wy += 22) {
+    for (let wx = bx + 7; wx < bx + bw - 7; wx += 14) {
+      if (rnd() < 0.55) {
+        const wc: RGB = rnd() < 0.5 ? YELLOW : CYAN;
+        fillRect(wx, wy, wx + 6, wy + 9, wc);
+      }
+    }
+  }
+}
+// light beams radiating from the hole
+for (let i = 0; i < 7; i++) {
+  const a = -0.9 + i * 0.28;
+  const x2 = 830 + Math.cos(a) * 420, y2 = 660 + Math.sin(a) * 420;
+  thickLine(830, 660, x2, y2, 5 + (i % 3) * 3, i % 2 === 0 ? CYAN : MAGENTA, 0.5);
+}
+// gold shards flying out of the break
+seed = 4242;
+for (let i = 0; i < 26; i++) {
+  const cx = 700 + rnd() * 280, cy = 520 + rnd() * 300;
+  const s = 6 + rnd() * 16, a = rnd() * Math.PI;
+  const pts: Pt[] = [];
+  for (let k = 0; k < 3; k++) {
+    const aa = a + (k * 2 * Math.PI) / 3;
+    pts.push([cx + Math.cos(aa) * s, cy + Math.sin(aa) * s * 0.6]);
+  }
+  poly(pts, rnd() < 0.5 ? GOLD_HI : GOLD_MID);
+}
+// cracks radiating from the break into the frame's gold bars
+thickLine(700, 560, 660, 520, 4, GOLD_DK, 0.9);
+thickLine(700, 560, 690, 610, 4, GOLD_DK, 0.9);
+thickLine(760, 520, 740, 470, 4, GOLD_DK, 0.9);
+thickLine(830, 560, 850, 500, 4, GOLD_DK, 0.9);
+thickLine(860, 740, 900, 780, 4, GOLD_DK, 0.9);
+// sparks
+seed = 99;
+for (let i = 0; i < 60; i++) {
+  const x = 640 + rnd() * 380, y = 420 + rnd() * 420;
+  const c: RGB = [MAGENTA, CYAN, YELLOW, WHITE][i % 4];
+  const r = 1 + rnd() * 3;
+  circle(x, y, r, c);
+  if (rnd() < 0.4) { thickLine(x - 8, y, x + 8, y, 2, c, 0.8); thickLine(x, y - 8, x, y + 8, 2, c, 0.8); }
 }
 
-// ---- Font bitmap 5x7 (huruf yang dipakai + alfabet lengkap) ----
-const FONT = {
+// ---------- 6. the reaching hand (canvas space, bursting out) ----------
+// A bright flash where the hand tears through the canvas
+glow(760, 620, 200, [255, 220, 160], 0.35);
+// no forearm drawn: the hand bursts straight out of the glow and the
+// broken corner, which reads cleaner than any stub arm at this scale
+// (a short stub looked like a detached digit)
+// palm, big and bright, centre-right, tilted toward the viewer
+ellipse(806, 556, 88, 100, SKIN);
+ellipse(776, 534, 50, 58, SKIN_HI, 0.6);
+ellipse(836, 590, 44, 52, SKIN_DK, 0.25);
+// fingers reaching up-right, each drawn as two segments so they curve
+// slightly outward like a hand opening toward the viewer
+function finger(x0: number, y0: number, mx: number, my: number, x1: number, y1: number, w: number): void {
+  thickLine(x0, y0, mx, my, w, SKIN);
+  thickLine(mx, my, x1, y1, w * 0.88, SKIN);
+  thickLine(x0, y0, mx, my, w * 0.5, SKIN_HI, 0.5);
+  circle(x1, y1, w * 0.4, SKIN_HI);
+  // fingertip nail
+  ellipse(x1, y1 - 4, w * 0.22, w * 0.3, [250, 225, 200], 0.9);
+}
+finger(766, 472, 736, 400, 706, 332, 34); // index
+finger(806, 454, 788, 380, 772, 302, 36); // middle
+finger(848, 464, 852, 392, 854, 322, 34); // ring
+finger(886, 490, 912, 436, 930, 384, 30); // pinky
+// thumb: a tapered capsule sweeping down-left from the palm's edge
+thickLine(724, 566, 676, 612, 34, SKIN);
+thickLine(676, 612, 644, 646, 28, SKIN);
+thickLine(724, 566, 676, 612, 18, SKIN_HI, 0.5);
+circle(640, 650, 13, SKIN_HI);
+// knuckle creases (short, dark, only between fingers)
+thickLine(782, 478, 752, 556, 4, SKIN_DK, 0.8);
+thickLine(826, 468, 808, 556, 4, SKIN_DK, 0.8);
+thickLine(866, 478, 856, 556, 4, SKIN_DK, 0.8);
+// rim light: thin, only on the outer (right) edge of each finger,
+// so it reads as light, not as neon sticks
+thickLine(706, 332, 736, 400, 3, CYAN, 0.7);
+thickLine(772, 302, 788, 380, 3, CYAN, 0.7);
+thickLine(854, 322, 852, 392, 3, CYAN, 0.7);
+thickLine(930, 384, 912, 436, 3, CYAN, 0.7);
+thickLine(886, 490, 848, 556, 3, CYAN, 0.55);
+thickLine(766, 472, 724, 566, 3, MAGENTA, 0.6);
+thickLine(644, 646, 676, 612, 3, MAGENTA, 0.55);
+// motion streaks: only to the RIGHT of the hand, never across the face
+// or the fingers (hand ends near x=945)
+for (let i = 0; i < 4; i++) {
+  const y = 420 + i * 52;
+  thickLine(958, y, 1010, y - 24, 4, i % 2 === 0 ? CYAN : MAGENTA, 0.5);
+}
+
+// ---------- 7. vignette ----------
+vignette(0.7);
+
+// ---------- 8. text: IT ESCAPED. (5x7 block font, huge, clean) ----------
+const FONT: Record<string, string[]> = {
   A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
-  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
   C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
   D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
   E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
-  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
-  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
-  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
-  I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
-  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
-  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
-  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
-  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
-  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
-  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
   P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
-  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
-  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
   S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
   T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
-  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
-  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
-  W: ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
-  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
-  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
-  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
-  '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
-  '?': ['01110', '10001', '00001', '00010', '00100', '00000', '00100'],
-  ',': ['00000', '00000', '00000', '00000', '00100', '00100', '01000'],
-  '.': ['00000', '00000', '00000', '00000', '00000', '00000', '00100'],
-  "'": ['00100', '00100', '01000', '00000', '00000', '00000', '00000'],
+  '.': ['00000', '00000', '00000', '00000', '00000', '01100', '01100'],
   ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
 };
-
-function drawText(str, x, y, scale, fill, outline) {
-  const offs = [];
-  const od = Math.max(2, Math.round(scale / 4));
-  for (let a = -od; a <= od; a += od) {
-    for (let b = -od; b <= od; b += od) {
-      if (a !== 0 || b !== 0) offs.push([a, b]);
-    }
-  }
-  const passes = [];
-  for (const o of offs) passes.push([x + o[0], y + o[1], outline]);
-  passes.push([x, y, fill]);
-  for (const pass of passes) {
-    let cx = pass[0];
-    const cy = pass[1];
-    const col = pass[2];
-    for (const ch of str) {
-      const g = FONT[ch] || FONT[' '];
-      for (let r = 0; r < 7; r++) {
-        for (let ccol = 0; ccol < 5; ccol++) {
-          if (g[r][ccol] === '1') {
-            fillRect(cx + ccol * scale, cy + r * scale, scale, scale, col);
-          }
-        }
+function drawText(text: string, x0: number, y0: number, s: number, c: RGB): void {
+  let cx = x0;
+  for (const ch of text) {
+    const g = FONT[ch] ?? FONT[' '];
+    for (let r = 0; r < 7; r++) {
+      for (let col = 0; col < 5; col++) {
+        if (g[r][col] === '1') fillRect(cx + col * s, y0 + r * s, cx + (col + 1) * s, y0 + (r + 1) * s, c);
       }
-      cx += 6 * scale;
     }
+    cx += 6 * s;
   }
 }
+const TEXT = 'IT ESCAPED.';
+const TS = 12; // cell scale -> letters 84px tall
+const textW = TEXT.length * 6 * TS - TS;
+const tx = Math.round((W - textW) / 2);
+const ty = 886;
+// magenta drop shadow, then dark outline, then white
+drawText(TEXT, tx + 9, ty + 9, TS, MAGENTA);
+drawText(TEXT, tx - 3, ty - 3, TS, INK);
+drawText(TEXT, tx + 3, ty - 3, TS, INK);
+drawText(TEXT, tx - 3, ty + 3, TS, INK);
+drawText(TEXT, tx + 3, ty + 3, TS, INK);
+drawText(TEXT, tx, ty, TS, WHITE);
+// thin gold rule under the text
+fillRect(tx, 986, tx + textW, 992, GOLD_HI);
 
-// Bintang 4-sisi (kilau).
-function sparkle(x, y, s, c) {
-  const k = 0.26;
-  fillPoly(
-    [
-      [x, y - s],
-      [x + s * k, y - s * k],
-      [x + s, y],
-      [x + s * k, y + s * k],
-      [x, y + s],
-      [x - s * k, y + s * k],
-      [x - s, y],
-      [x - s * k, y - s * k],
-    ],
-    c,
-  );
+// ---------- PNG encode (filter 0, zlib level 9) ----------
+const crcTable = new Int32Array(256);
+for (let n = 0; n < 256; n++) {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  crcTable[n] = c;
 }
-
-// ---- Warna ----
-const VIOLET = [36, 16, 85];
-const GOLD = [255, 196, 0];
-const ORANGE = [255, 87, 34];
-const BODY = [255, 140, 0];
-const BODY_DARK = [230, 81, 0];
-const BELLY = [255, 233, 168];
-const TAIL = [255, 61, 0];
-const FIN = [255, 94, 0];
-const SPOT = [138, 47, 0];
-const WHITE = [255, 255, 255];
-const ICE = [174, 233, 255];
-const TEAL = [7, 94, 107];
-const TEAL_DARK = [4, 62, 72];
-const INK = [22, 10, 46];
-
-// ---- 1. Latar: violet + sunburst ----
-fillRect(0, 0, W, W, VIOLET);
-const CX = 660;
-const CY = 430;
-const RAYS = 24;
-for (let i = 0; i < RAYS; i++) {
-  const a0 = (i * 2 * Math.PI) / RAYS;
-  const a1 = ((i + 1) * 2 * Math.PI) / RAYS;
-  const R = 1600;
-  fillPoly(
-    [
-      [CX, CY],
-      [CX + Math.cos(a0) * R, CY + Math.sin(a0) * R],
-      [CX + Math.cos(a1) * R, CY + Math.sin(a1) * R],
-    ],
-    i % 2 === 0 ? GOLD : ORANGE,
-  );
-}
-// Kilau radial lembut di pusat sinar.
-fillCircleA(CX, CY, 470, [255, 243, 176], 0.22);
-fillCircleA(CX, CY, 660, [255, 243, 176], 0.12);
-
-// ---- 2. Permukaan air (pita bawah) ----
-fillRect(0, 860, W, W - 860, TEAL);
-fillEllipse(512, 862, 560, 14, [16, 140, 158]);
-for (let x = 0; x <= W; x += 8) {
-  const y = 862 + Math.sin((x / W) * Math.PI * 6) * 4;
-  fillCircle(x, y, 5, [190, 240, 245]);
-}
-
-// ---- 3. Mangkuk ikan mungil (kiri bawah) ----
-fillEllipse(190, 898, 125, 13, TEAL_DARK); // bayangan
-fillEllipse(190, 836, 106, 58, [159, 220, 240]); // kaca
-fillEllipse(190, 830, 93, 47, [31, 182, 214]); // air
-fillEllipse(190, 822, 106, 24, [216, 244, 255]); // bibir
-fillEllipse(190, 822, 88, 16, [31, 182, 214]); // air terlihat
-fillEllipseA(158, 812, 26, 10, WHITE, 0.85); // kilau kaca
-
-// ---- 4. Ikan koi raksasa: tulang punggung Bezier ----
-const P0 = [250, 800];
-const P1 = [430, 690];
-const P2 = [790, 330];
-const PROF = [
-  [0, 16],
-  [0.15, 34],
-  [0.35, 72],
-  [0.55, 92],
-  [0.75, 84],
-  [0.9, 66],
-  [1, 58],
-];
-function radiusAt(t) {
-  for (let i = 0; i + 1 < PROF.length; i++) {
-    if (t <= PROF[i + 1][0]) {
-      const t0 = PROF[i][0];
-      const t1 = PROF[i + 1][0];
-      const f = (t - t0) / (t1 - t0);
-      return PROF[i][1] + (PROF[i + 1][1] - PROF[i][1]) * f;
-    }
-  }
-  return PROF[PROF.length - 1][1];
-}
-function spine(t) {
-  return bez2(P0, P1, P2, t);
-}
-function tangent(t) {
-  return bez2Tan(P0, P1, P2, t);
-}
-// Normal "perut" (sisi bawah-kanan lintasan).
-function bellyN(t) {
-  const T = tangent(t);
-  return [-T[1], T[0]];
-}
-
-// Sirip ekor dulu (di bawah badan).
-{
-  const b = spine(0);
-  const T = tangent(0);
-  const back = [-T[0], -T[1]];
-  const up = [-back[1], back[0]];
-  const tip1 = [b[0] + back[0] * 120 + up[0] * 68, b[1] + back[1] * 120 + up[1] * 68];
-  const tip2 = [b[0] + back[0] * 128 - up[0] * 55, b[1] + back[1] * 128 - up[1] * 55];
-  const mid = [b[0] + back[0] * 68, b[1] + back[1] * 68];
-  fillPoly([b, tip1, mid, tip2], TAIL);
-  fillPoly(
-    [
-      [b[0] + back[0] * 16, b[1] + back[1] * 16],
-      [b[0] + back[0] * 92 + up[0] * 48, b[1] + back[1] * 92 + up[1] * 48],
-      [b[0] + back[0] * 58, b[1] + back[1] * 58],
-      [b[0] + back[0] * 98 - up[0] * 38, b[1] + back[1] * 98 - up[1] * 38],
-    ],
-    [255, 122, 26],
-  );
-}
-
-// Badan: lingkaran-lingkaran sepanjang tulang punggung.
-for (let i = 0; i <= 50; i++) {
-  const t = i / 50;
-  const p = spine(t);
-  fillCircle(p[0], p[1], radiusAt(t), BODY);
-}
-// Perut krem di sisi bawah.
-for (let i = 0; i <= 44; i++) {
-  const t = 0.08 + (i / 44) * 0.87;
-  const p = spine(t);
-  const N = bellyN(t);
-  const r = radiusAt(t);
-  fillCircle(p[0] + N[0] * r * 0.42, p[1] + N[1] * r * 0.42, r * 0.72, BELLY);
-}
-// Punggung lebih gelap di sisi atas (pita halus mengikuti tulang punggung).
-{
-  const top = [];
-  const bot = [];
-  for (let i = 0; i <= 40; i++) {
-    const t = 0.12 + (i / 40) * 0.8;
-    const p = spine(t);
-    const N = bellyN(t);
-    const r = radiusAt(t);
-    top.push([p[0] - N[0] * r * 0.95, p[1] - N[1] * r * 0.95]);
-    bot.push([p[0] - N[0] * r * 0.1, p[1] - N[1] * r * 0.1]);
-  }
-  fillPoly(top.concat(bot.reverse()), BODY_DARK);
-}
-// Bintik-bintik gelap di punggung.
-{
-  const rnd = mulberry32(777);
-  const spotT = [0.3, 0.38, 0.47, 0.55, 0.63, 0.71, 0.8, 0.88];
-  for (const t of spotT) {
-    const p = spine(t);
-    const N = bellyN(t);
-    const r = radiusAt(t);
-    const off = 0.18 + rnd() * 0.22;
-    fillEllipse(
-      p[0] - N[0] * r * off,
-      p[1] - N[1] * r * off,
-      r * (0.3 + rnd() * 0.12),
-      r * (0.2 + rnd() * 0.08),
-      SPOT,
-    );
-  }
-}
-
-// Sirip punggung (segitiga besar di atas badan).
-{
-  const a = spine(0.3);
-  const b = spine(0.46);
-  const c = spine(0.62);
-  const Na = bellyN(0.3);
-  const Nb = bellyN(0.46);
-  const Nc = bellyN(0.62);
-  fillPoly(
-    [
-      [a[0] - Na[0] * (radiusAt(0.3) + 4), a[1] - Na[1] * (radiusAt(0.3) + 4)],
-      [b[0] - Nb[0] * (radiusAt(0.46) + 62), b[1] - Nb[1] * (radiusAt(0.46) + 62)],
-      [c[0] - Nc[0] * (radiusAt(0.62) + 4), c[1] - Nc[1] * (radiusAt(0.62) + 4)],
-    ],
-    FIN,
-  );
-}
-// Sirip dada (di bawah badan).
-{
-  const p = spine(0.62);
-  const N = bellyN(0.62);
-  const T = tangent(0.62);
-  const r = radiusAt(0.62);
-  fillPoly(
-    [
-      [p[0] + N[0] * r * 0.5, p[1] + N[1] * r * 0.5],
-      [p[0] + N[0] * (r + 58) + T[0] * 34, p[1] + N[1] * (r + 58) + T[1] * 34],
-      [p[0] + N[0] * r * 0.6 + T[0] * 62, p[1] + N[1] * r * 0.6 + T[1] * 62],
-    ],
-    FIN,
-  );
-}
-
-// Kepala + moncong + mata + mulut.
-{
-  const h = spine(1);
-  const T = tangent(1);
-  const N = bellyN(1);
-  fillCircle(h[0], h[1], 70, BODY);
-  fillCircle(h[0] + T[0] * 42, h[1] + T[1] * 42, 44, BODY);
-  fillCircle(h[0] - N[0] * 30, h[1] - N[1] * 30, 30, BODY_DARK);
-  fillCircle(h[0] - N[0] * 34, h[1] - N[1] * 34, 20, BODY);
-  // Mata.
-  const ex = h[0] + T[0] * 18 - N[0] * 30;
-  const ey = h[1] + T[1] * 18 - N[1] * 30;
-  fillCircle(ex, ey, 24, WHITE);
-  fillCircle(ex + 4, ey - 2, 12, [16, 10, 30]);
-  fillCircle(ex - 1, ey - 7, 4, WHITE);
-  // Mulut: titik kecil di ujung moncong.
-  const mx = h[0] + T[0] * 80;
-  const my = h[1] + T[1] * 80;
-  fillEllipse(mx - N[0] * 4, my - N[1] * 4, 10, 6, [90, 20, 0]);
-}
-
-// ---- 5. Percikan air: mahkota di mangkuk + tetesan mengejar ikan ----
-{
-  const rnd = mulberry32(20261117);
-  // Mahkota percikan di bibir mangkuk.
-  for (let k = 0; k < 7; k++) {
-    const a = Math.PI * (1.05 + (k / 6) * 0.9);
-    const d = 78 + rnd() * 40;
-    fillEllipse(190 + Math.cos(a) * d, 812 + Math.sin(a) * d * 0.7, 16 + rnd() * 14, 9 + rnd() * 8, WHITE);
-  }
-  // Tetesan di sekitar mangkuk.
-  for (let k = 0; k < 26; k++) {
-    const a = rnd() * Math.PI * 2;
-    const d = 60 + rnd() * 130;
-    const x = 190 + Math.cos(a) * d;
-    const y = 800 + Math.sin(a) * d * 0.75;
-    if (y > 855) continue;
-    fillCircle(x, y, 3 + rnd() * 9, rnd() < 0.6 ? WHITE : ICE);
-  }
-  // Tetesan mengejar di sepanjang sisi atas ikan.
-  for (let k = 0; k < 46; k++) {
-    const t = 0.08 + rnd() * 0.85;
-    const p = spine(t);
-    const N = bellyN(t);
-    const r = radiusAt(t);
-    const off = r + 12 + rnd() * 70;
-    const along = (rnd() - 0.5) * 60;
-    const T = tangent(t);
-    fillCircle(
-      p[0] - N[0] * off + T[0] * along,
-      p[1] - N[1] * off + T[1] * along,
-      3 + rnd() * 10,
-      rnd() < 0.65 ? WHITE : ICE,
-    );
-  }
-  // Jejak air putih di bawah ekor.
-  for (let k = 0; k <= 12; k++) {
-    const t = k / 12;
-    const x = 250 - t * 55;
-    const y = 800 - t * 30 + Math.sin(t * 9) * 6;
-    fillCircleA(x, y, 22 - t * 12, WHITE, 0.85);
-  }
-}
-
-// ---- 6. Kilau bintang ----
-sparkle(120, 180, 16, WHITE);
-sparkle(880, 130, 20, WHITE);
-sparkle(940, 640, 14, [255, 243, 176]);
-sparkle(430, 120, 12, WHITE);
-sparkle(90, 480, 12, [255, 243, 176]);
-sparkle(700, 760, 14, WHITE);
-
-// ---- 7. Teks besar, bersih, ber-outline ----
-drawText('WOW!', 52, 48, 15, WHITE, INK);
-drawText('FEEL THAT, JUDGE?', 372, 905, 6, WHITE, [4, 48, 60]);
-
-// ---- Encode PNG (RGB, filter 0) + downsample 2x2 ----
-function crc32(data) {
-  let table = crc32.table;
-  if (!table) {
-    table = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      table[n] = c >>> 0;
-    }
-    crc32.table = table;
-  }
+function crc32(b: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < data.length; i++) c = table[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
-
-function chunk(type, data) {
-  const out = new Uint8Array(12 + data.length);
-  const dv = new DataView(out.buffer);
-  dv.setUint32(0, data.length);
-  out.set(Buffer.from(type, 'ascii'), 4);
-  out.set(data, 8);
-  const crcData = new Uint8Array(4 + data.length);
-  crcData.set(Buffer.from(type, 'ascii'), 0);
-  crcData.set(data, 4);
-  dv.setUint32(8 + data.length, crc32(crcData));
+function chunk(type: string, data: Buffer): Buffer {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
   return out;
 }
-
-function encodePng() {
-  const raw = new Uint8Array((W * 3 + 1) * W);
-  for (let y = 0; y < W; y++) {
-    raw[y * (W * 3 + 1)] = 0;
-    for (let x = 0; x < W; x++) {
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      for (let sy = 0; sy < SS; sy++) {
-        for (let sx = 0; sx < SS; sx++) {
-          const i = idx(x * SS + sx, y * SS + sy);
-          r += buf[i];
-          g += buf[i + 1];
-          b += buf[i + 2];
-        }
-      }
-      const o = y * (W * 3 + 1) + 1 + x * 3;
-      raw[o] = Math.round(r / (SS * SS));
-      raw[o + 1] = Math.round(g / (SS * SS));
-      raw[o + 2] = Math.round(b / (SS * SS));
-    }
-  }
-  const ihdr = new Uint8Array(13);
-  const dv = new DataView(ihdr.buffer);
-  dv.setUint32(0, W);
-  dv.setUint32(4, W);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // color type RGB
-  const idat = deflateSync(raw, { level: 9 });
-  const png = new Uint8Array(8 + 12 + 13 + 12 + idat.length + 12);
-  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-  let off = 8;
-  for (const ch of [chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', new Uint8Array(0))]) {
-    png.set(ch, off);
-    off += ch.length;
-  }
-  return png;
+const ihdr = Buffer.alloc(13);
+ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+const raw = Buffer.alloc(H * (1 + W * 3));
+for (let y = 0; y < H; y++) {
+  raw[y * (1 + W * 3)] = 0;
+  Buffer.from(buf.buffer, y * W * 3, W * 3).copy(raw, y * (1 + W * 3) + 1);
 }
-
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'entry.png'), encodePng());
+const png = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  chunk('IHDR', ihdr),
+  chunk('IDAT', deflateSync(raw, { level: 9 })),
+  chunk('IEND', Buffer.alloc(0)),
+]);
+mkdirSync(OUT, { recursive: true });
+writeFileSync(join(OUT, 'entry.png'), png);
